@@ -172,3 +172,6 @@ cython_debug/
 
 # output
 output/
+
+# その他
+.DS_Store
