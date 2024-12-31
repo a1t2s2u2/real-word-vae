@@ -9,21 +9,19 @@ import numpy as np
 import matplotlib.pyplot as plt
 import os
 
-# Dataset to capture images from the camera
 class CameraDataset(Dataset):
     def __init__(self, transform=None):
         self.transform = transform
-        self.cap = cv2.VideoCapture(0)  # Open the default camera
+        self.cap = cv2.VideoCapture(0)
 
     def __len__(self):
-        return 1000  # Arbitrary length for demonstration
+        return 1000
 
     def __getitem__(self, idx):
         ret, frame = self.cap.read()
         if not ret:
             raise RuntimeError("Failed to capture image from camera")
 
-        # Convert BGR to RGB and apply transformations
         frame = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
         frame = cv2.resize(frame, (64, 64))
         if self.transform:
@@ -34,7 +32,6 @@ class CameraDataset(Dataset):
     def release(self):
         self.cap.release()
 
-# Define the CNN-based VAE
 class VAE(nn.Module):
     def __init__(self):
         super(VAE, self).__init__()
@@ -89,11 +86,10 @@ def vae_loss(recon_x, x, mu, logvar):
     kld_loss = -0.5 * torch.sum(1 + logvar - mu.pow(2) - logvar.exp())
     return recon_loss + kld_loss
 
-# Save input and output images to the output folder
+
 def save_and_show_images(input_image, output_image, step, update_interval=0.1):
     os.makedirs("output", exist_ok=True)
     
-    # detach()を使用して勾配計算を無効化し、CPUに移動してからNumPy配列に変換
     input_image_np = (input_image.detach().permute(1, 2, 0).cpu().numpy() * 255).astype(np.uint8)
     output_image_np = (output_image.detach().permute(1, 2, 0).cpu().numpy() * 255).astype(np.uint8)
 
@@ -116,14 +112,11 @@ def save_and_show_images(input_image, output_image, step, update_interval=0.1):
     # 指定した間隔で更新
     key = cv2.waitKey(int(update_interval * 1000))
     if key == ord('q'):  # 'q'を押すと終了
-        return True  # 終了フラグを返す
+        return True
 
-    return False  # 継続フラグを返す
-
-
+    return False
 
 
-# Main training loop
 def train_vae(update_interval=0.1):
     transform = transforms.Compose([
         transforms.ToTensor()
@@ -138,9 +131,9 @@ def train_vae(update_interval=0.1):
     optimizer = optim.Adam(model.parameters(), lr=1e-3)
 
     step = 0
-    for epoch in range(10):  # Train for 10 epochs
+    for epoch in range(10):
         for i, batch in enumerate(dataloader):
-            batch = batch.to(device)  # データをデバイスに送る
+            batch = batch.to(device)
 
             # Forward pass
             recon_batch, mu, logvar = model(batch)
@@ -153,17 +146,15 @@ def train_vae(update_interval=0.1):
 
             print(f"Epoch [{epoch+1}/10], Step [{i+1}/{len(dataloader)}], Loss: {loss.item():.4f}")
 
-            # Save input and reconstructed images, and show them in real-time
             if save_and_show_images(batch[0], recon_batch[0], step, update_interval):
                 dataset.release()
                 cv2.destroyAllWindows()
-                return  # ユーザーが'q'を押したら終了
+                return
 
             step += 1
 
     dataset.release()
     cv2.destroyAllWindows()
-
 
 
 if __name__ == "__main__":
