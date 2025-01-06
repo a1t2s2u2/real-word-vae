@@ -5,7 +5,6 @@ import torch.optim as optim
 from torch.utils.data import DataLoader, Dataset
 from torchvision import transforms
 import numpy as np
-import matplotlib.pyplot as plt
 import os
 
 class CameraDataset(Dataset):
