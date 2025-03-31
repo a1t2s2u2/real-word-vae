@@ -6,34 +6,61 @@ from torch.utils.data import DataLoader, Dataset
 from torchvision import transforms
 import numpy as np
 import os
+import logging
+from contextlib import contextmanager
+
+# 定数定義
+IMAGE_SIZE = 64
+EPOCHS = 10
+BATCH_SIZE = 1
+DEVICE = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+
+# ログ設定
+logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
+
+@contextmanager
+def camera_capture(device_index=0):
+    cap = cv2.VideoCapture(device_index)
+    if not cap.isOpened():
+        logging.error("カメラをオープンできませんでした。")
+        raise RuntimeError("Failed to open camera")
+    try:
+        yield cap
+    finally:
+        cap.release()
+
+def get_frame(retries=3, device_index=0):
+    for attempt in range(retries):
+        try:
+            with camera_capture(device_index) as cap:
+                ret, frame = cap.read()
+                if ret:
+                    frame = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
+                    frame = cv2.resize(frame, (IMAGE_SIZE, IMAGE_SIZE))
+                    return frame
+                else:
+                    logging.warning(f"カメラからの画像取得に失敗しました。再試行: {attempt+1}/{retries}")
+        except Exception as e:
+            logging.warning(f"カメラキャプチャ例外: {e}。再試行: {attempt+1}/{retries}")
+    raise RuntimeError("Failed to capture image from camera after several attempts")
 
 class CameraDataset(Dataset):
-    def __init__(self, transform=None):
+    def __init__(self, transform=None, length=1000):
         self.transform = transform
-        self.cap = cv2.VideoCapture(0)
+        self.length = length
 
     def __len__(self):
-        return 1000
+        return self.length
 
     def __getitem__(self, idx):
-        ret, frame = self.cap.read()
-        if not ret:
-            raise RuntimeError("Failed to capture image from camera")
-
-        frame = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
-        frame = cv2.resize(frame, (64, 64))
+        frame = get_frame()
         if self.transform:
             frame = self.transform(frame)
-
         return frame
-
-    def release(self):
-        self.cap.release()
 
 class VAE(nn.Module):
     def __init__(self):
         super(VAE, self).__init__()
-        
         # Encoder
         self.encoder = nn.Sequential(
             nn.Conv2d(3, 32, kernel_size=4, stride=2, padding=1),
@@ -43,7 +70,6 @@ class VAE(nn.Module):
             nn.Conv2d(64, 128, kernel_size=4, stride=2, padding=1),
             nn.ReLU()
         )
-        
         self.fc_mu = nn.Linear(128 * 8 * 8, 128)
         self.fc_logvar = nn.Linear(128 * 8 * 8, 128)
         
@@ -70,35 +96,30 @@ class VAE(nn.Module):
         mu = self.fc_mu(x)
         logvar = self.fc_logvar(x)
         z = self.reparameterize(mu, logvar)
-
         # Decoding
         x = self.fc_decode(z)
         x = x.view(x.size(0), 128, 8, 8)
         x = self.decoder(x)
-
         return x, mu, logvar
 
-# Loss function for VAE
 def vae_loss(recon_x, x, mu, logvar):
     recon_loss = nn.functional.mse_loss(recon_x, x, reduction='sum')
     kld_loss = -0.5 * torch.sum(1 + logvar - mu.pow(2) - logvar.exp())
     return recon_loss + kld_loss
 
-
 def save_and_show_images(input_image, output_image, step, update_interval=0.1):
-    os.makedirs("output", exist_ok=True)
+    os.makedirs("output/camera", exist_ok=True)
+    os.makedirs("output/vae", exist_ok=True)
     
     input_image_np = (input_image.detach().permute(1, 2, 0).cpu().numpy() * 255).astype(np.uint8)
     output_image_np = (output_image.detach().permute(1, 2, 0).cpu().numpy() * 255).astype(np.uint8)
 
-    # 保存
     input_path = os.path.join("output/camera", f"input_{step}.png")
     output_path = os.path.join("output/vae", f"output_{step}.png")
     cv2.imwrite(input_path, cv2.cvtColor(input_image_np, cv2.COLOR_RGB2BGR))
     cv2.imwrite(output_path, cv2.cvtColor(output_image_np, cv2.COLOR_RGB2BGR))
 
-    # 入力画像と出力画像を表示
-    window_size = 400  # ウィンドウサイズ（正方形の一辺のピクセル数）
+    window_size = 400
     cv2.namedWindow("Input Image (Camera)", cv2.WINDOW_NORMAL)
     cv2.resizeWindow("Input Image (Camera)", window_size, window_size)
     cv2.imshow("Input Image (Camera)", cv2.cvtColor(input_image_np, cv2.COLOR_RGB2BGR))
@@ -107,53 +128,43 @@ def save_and_show_images(input_image, output_image, step, update_interval=0.1):
     cv2.resizeWindow("Reconstructed Image (VAE Output)", window_size, window_size)
     cv2.imshow("Reconstructed Image (VAE Output)", cv2.cvtColor(output_image_np, cv2.COLOR_RGB2BGR))
 
-    # 指定した間隔で更新
     key = cv2.waitKey(int(update_interval * 1000))
-    if key == ord('q'):  # 'q'を押すと終了
+    if key == ord('q'):
         return True
-
     return False
-
 
 def train_vae(update_interval=0.1):
     transform = transforms.Compose([
         transforms.ToTensor()
     ])
     dataset = CameraDataset(transform=transform)
-    dataloader = DataLoader(dataset, batch_size=1, shuffle=True)
+    dataloader = DataLoader(dataset, batch_size=BATCH_SIZE, shuffle=True)
 
-    device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
-    print(f"Using device: {device}")
+    logging.info(f"Using device: {DEVICE}")
 
-    model = VAE().to(device)
+    model = VAE().to(DEVICE)
     optimizer = optim.Adam(model.parameters(), lr=1e-3)
 
     step = 0
-    for epoch in range(10):
+    for epoch in range(EPOCHS):
         for i, batch in enumerate(dataloader):
-            batch = batch.to(device)
-
-            # Forward pass
+            batch = batch.to(DEVICE).unsqueeze(0)  # バッチサイズが1の場合のshape調整
             recon_batch, mu, logvar = model(batch)
             loss = vae_loss(recon_batch, batch, mu, logvar)
 
-            # Backward pass
             optimizer.zero_grad()
             loss.backward()
             optimizer.step()
 
-            print(f"Epoch [{epoch+1}/10], Step [{i+1}/{len(dataloader)}], Loss: {loss.item():.4f}")
+            logging.info(f"Epoch [{epoch+1}/{EPOCHS}], Step [{i+1}/{len(dataloader)}], Loss: {loss.item():.4f}")
 
             if save_and_show_images(batch[0], recon_batch[0], step, update_interval):
-                dataset.release()
                 cv2.destroyAllWindows()
                 return
 
             step += 1
 
-    dataset.release()
     cv2.destroyAllWindows()
-
 
 if __name__ == "__main__":
     train_vae()
